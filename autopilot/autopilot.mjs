@@ -146,9 +146,63 @@ async function tick() {
   }
 }
 
-createServer((req, res) => {
-  res.writeHead(200, { 'Content-Type': 'application/json' });
-  res.end(JSON.stringify({ agent: 'blaxel-autopilot', mcp: MCP_URL, recent_actions: log }, null, 2));
+// Cloud stand-in for Ignition, so a demo needs no laptop: the same events
+// scripts/simulate-plant.mjs sends. Needs PLANT_INGEST_TOKEN.
+const INGEST_URL = `${process.env.INSFORGE_FUNCTIONS_URL ?? 'https://nden3esm.us-west.insforge.app/functions'}/plant-ingest`;
+const PLANT = { asset_id: 'PUMP-101', alarm_id: 'PUMP101_LOW_FLOW' };
+
+async function plantEvent(event) {
+  const res = await fetch(INGEST_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-plant-token': process.env.PLANT_INGEST_TOKEN ?? '' },
+    body: JSON.stringify({ asset_id: PLANT.asset_id, ts: new Date().toISOString(), ...event }),
+  });
+  return res.json().catch(() => ({ status: res.status }));
+}
+
+async function simulate(kind, secs) {
+  if (kind === 'alarm') {
+    return plantEvent({
+      type: 'alarm_active', alarm_id: PLANT.alarm_id, severity: 'high',
+      message: 'Pump 101 low flow: commanded to run, flow 0 L/min, drive fault active',
+      tags: { flow: 0, run_cmd: true, fault: true },
+    });
+  }
+  const healthy = kind === 'healthy';
+  if (healthy) await plantEvent({ type: 'alarm_cleared', alarm_id: PLANT.alarm_id, tags: { flow: 120, run_cmd: true, fault: false } });
+  // Stream readings in the background so the HTTP call returns immediately.
+  (async () => {
+    for (let t = 0; t <= secs; t += 5) {
+      await plantEvent({
+        type: 'reading',
+        tags: healthy ? { flow: 118 + Math.round(Math.random() * 6), run_cmd: true, fault: false }
+          : { flow: 0, run_cmd: true, fault: true },
+      });
+      await new Promise((r) => setTimeout(r, 5000));
+    }
+  })().catch((e) => record('-', 'error', `simulator: ${e.message}`));
+  return { ok: true, streaming: `${kind} readings for ${secs}s` };
+}
+
+createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const send = (code, body) => {
+    res.writeHead(code, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(body, null, 2));
+  };
+  const sim = url.pathname.match(/^\/simulate\/(alarm|healthy|faulty)$/);
+  if (sim) {
+    if (!process.env.PLANT_INGEST_TOKEN) return send(503, { error: 'PLANT_INGEST_TOKEN not set' });
+    const result = await simulate(sim[1], Number(url.searchParams.get('secs') ?? 35));
+    record('-', `simulate_${sim[1]}`, JSON.stringify(result).slice(0, 120));
+    return send(200, result);
+  }
+  send(200, {
+    agent: 'plant-autopilot',
+    mcp: MCP_URL,
+    simulate: ['/simulate/alarm', '/simulate/healthy?secs=35', '/simulate/faulty?secs=10'],
+    recent_actions: log,
+  });
 }).listen(Number(process.env.PORT ?? 8080));
 
 await connect();

@@ -1,0 +1,22 @@
+# Deploy database, edge functions and approval page to InsForge from GitHub.
+# Repo secrets needed: INSFORGE_ACCESS_TOKEN (InsForge dashboard: Profile -> API Keys).
+name: deploy
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: ['migrations/**', 'functions/src/**', 'approval-page/**', 'scripts/**']
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      INSFORGE_ACCESS_TOKEN: ${{ secrets.INSFORGE_ACCESS_TOKEN }}
+      INSFORGE_PROJECT_ID: d7b0a23f-d743-43f7-a33d-c4fc0d308169
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/deploy.sh

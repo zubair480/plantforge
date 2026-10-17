@@ -41,4 +41,25 @@ The database enforces every transition. Agents cannot skip approval, approvals m
 | `evals/` | Armature eval scenarios |
 | `scripts/simulate-plant.mjs` | Fake plant for demos without Ignition |
 
+## Run it in the cloud
+
+Everything except the physical plant software runs hosted:
+
+| Piece | Where it runs | How to (re)deploy |
+|---|---|---|
+| Database + functions | InsForge | `bash scripts/deploy.sh` (or the `deploy` GitHub Action) |
+| Approval page | InsForge hosting | same script |
+| MCP server | Manufact | `bash scripts/deploy.sh --mcp` |
+| Autopilot agent + plant simulator | Blaxel, or any container host | `docker build -t plant-autopilot autopilot` |
+| Ignition / CODESYS / Factory I/O | The plant's own Windows machine | `ignition/gateway_events.py` |
+
+**Demo with no laptop:** run the autopilot container with `PLANT_INGEST_TOKEN` set, then open:
+- `GET /simulate/alarm`: the pump fails. The agent diagnoses it and emails the contractor by itself.
+- `GET /simulate/healthy?secs=35`: after the repair, healthy readings let `verify_recovery` pass.
+- `GET /`: the agent's recent actions.
+
+**GitHub Action:** add the repo secret `INSFORGE_ACCESS_TOKEN` (InsForge dashboard → Profile → API Keys). Every push to `main` that touches `migrations/`, `functions/src/`, `approval-page/` or `scripts/` then deploys automatically. You can also run it by hand from the Actions tab.
+
+All config is environment variables. See [.env.example](.env.example).
+
 Details: [BACKEND.md](BACKEND.md). Secrets live in `.env.local` and InsForge secrets, never in the repo.

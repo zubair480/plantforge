@@ -1,18 +1,25 @@
 // Stand-in for Ignition: posts the same events Ignition's gateway script will send.
-// Reads INSFORGE_FUNCTIONS_URL and PLANT_INGEST_TOKEN from .env.local.
+// Reads INSFORGE_FUNCTIONS_URL and PLANT_INGEST_TOKEN from the environment, falling
+// back to .env.local, so it runs the same on a laptop, in CI or in a container.
 //
 //   node scripts/simulate-plant.mjs alarm            # pump fails: flow 0, fault on
 //   node scripts/simulate-plant.mjs healthy [secs]   # operator cleared fault: healthy readings every 5s
 //   node scripts/simulate-plant.mjs faulty [secs]    # still broken: faulty readings every 5s
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-const envFile = readFileSync(join(import.meta.dirname, '..', '.env.local'), 'utf8');
-const env = Object.fromEntries(
-  envFile.split(/\r?\n/).filter((l) => /^\w+=/.test(l)).map((l) => [l.split('=')[0], l.slice(l.indexOf('=') + 1)]),
-);
-const url = `${env.INSFORGE_FUNCTIONS_URL}/plant-ingest`;
+const envPath = join(import.meta.dirname, '..', '.env.local');
+const fileEnv = existsSync(envPath)
+  ? Object.fromEntries(readFileSync(envPath, 'utf8').split(/\r?\n/).filter((l) => /^\w+=/.test(l))
+      .map((l) => [l.split('=')[0], l.slice(l.indexOf('=') + 1)]))
+  : {};
+const env = { ...fileEnv, ...process.env };
+if (!env.PLANT_INGEST_TOKEN) {
+  console.error('PLANT_INGEST_TOKEN is not set (env var or .env.local)');
+  process.exit(1);
+}
+const url = `${env.INSFORGE_FUNCTIONS_URL ?? 'https://nden3esm.us-west.insforge.app/functions'}/plant-ingest`;
 
 const ASSET = 'PUMP-101';
 const ALARM = 'PUMP101_LOW_FLOW';

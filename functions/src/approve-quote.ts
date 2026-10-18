@@ -3,7 +3,8 @@
 // The amount must equal the quote exactly and be within the manager's spend limit.
 // APPROVAL_PENDING -> APPROVED, or back to QUOTE_RECEIVED when rejected.
 
-import { adminDb, dollars, fail, getManager, handler, json, readJson, transition, withNext } from './_shared.ts';
+import { adminDb, fail, getManager, handler, json, readJson, transition, withNext } from './_shared.ts';
+import { dollars } from './_logic.ts';
 
 export default handler(async (req) => {
   if (req.headers.get('x-agent-token')) {

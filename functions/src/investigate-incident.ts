@@ -3,28 +3,7 @@
 // model for a diagnosis and the trade to dispatch, and moves DETECTED -> DIAGNOSED.
 
 import { adminDb, checkToken, fail, handler, json, llmJson, loadIncident, readJson, transition, withNext } from './_shared.ts';
-
-const TRADES = ['mechanical', 'electrical', 'pump', 'motor', 'instrumentation'];
-
-function ruleBasedDiagnosis(incident: any, readings: any[]) {
-  const t = incident.tag_snapshot ?? {};
-  const noFlow = Number(t.flow ?? readings[0]?.flow_lpm ?? 0) <= 0;
-  if (t.run_cmd && noFlow && t.fault) {
-    return {
-      diagnosis: 'Pump is commanded to run but delivers no flow and the drive reports a fault. ' +
-        'Likely causes: tripped motor/drive, seized pump, or blocked suction. Needs on-site inspection.',
-      recommended_trade: 'pump',
-      confidence: 0.6,
-      evidence: ['run command ON', 'flow 0 L/min', 'fault bit active'],
-    };
-  }
-  return {
-    diagnosis: 'Abnormal operating condition reported by SCADA. On-site inspection required.',
-    recommended_trade: 'mechanical',
-    confidence: 0.4,
-    evidence: [`tag snapshot ${JSON.stringify(t)}`],
-  };
-}
+import { ruleBasedDiagnosis, TRADES } from './_logic.ts';
 
 export default handler(async (req) => {
   const denied = checkToken(req, 'x-agent-token', 'AGENT_API_TOKEN');

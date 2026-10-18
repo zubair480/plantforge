@@ -7,40 +7,8 @@
 // x-agent-token may post { "from": "...", "subject": "[INC-101] ...", "text": "...", "email_id": "test-1" }.
 // Keep it off in production, otherwise an agent could inject a contractor quote.
 
-import { adminDb, env, fail, handler, isAgent, json, llmJson, transition } from './_shared.ts';
-
-async function verifySignature(raw: string, header: string | null): Promise<boolean> {
-  if (!header) return false;
-  const parts = Object.fromEntries(header.split(',').map((p) => p.trim().split('=') as [string, string]));
-  const t = Number(parts.t);
-  if (!t || !parts.v1 || Math.abs(Date.now() / 1000 - t) > 300) return false;
-  const key = await crypto.subtle.importKey(
-    'raw', new TextEncoder().encode(env('PRIMITIVE_WEBHOOK_SECRET')),
-    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign'],
-  );
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(`${t}.${raw}`));
-  const hex = [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
-  if (hex.length !== parts.v1.length) return false;
-  let diff = 0;
-  for (let i = 0; i < hex.length; i++) diff |= hex.charCodeAt(i) ^ parts.v1.charCodeAt(i);
-  return diff === 0;
-}
-
-const addressOf = (from: string) => (from.match(/<([^>]+)>/)?.[1] ?? from).trim().toLowerCase();
-
-// Strip quoted history so we only parse what the contractor wrote.
-const stripQuoted = (text: string) =>
-  text.split(/\n\s*On .+wrote:|\n-{2,}\s*Original Message|\n>/)[0].trim();
-
-function regexQuote(text: string) {
-  const amount = text.match(/\$\s?([\d,]+(?:\.\d{1,2})?)/);
-  return {
-    amount_usd: amount ? Number(amount[1].replace(/,/g, '')) : null,
-    available_at: null,
-    scope: text.slice(0, 300),
-    missing: amount ? ['available_at'] : ['amount_usd', 'available_at'],
-  };
-}
+import { adminDb, fail, handler, isAgent, json, llmJson, transition } from './_shared.ts';
+import { addressOf, incidentIdIn, regexQuote, stripQuoted, toCents, verifyPrimitiveSignature } from './_logic.ts';
 
 export default handler(async (req) => {
   const raw = await req.text();
@@ -61,7 +29,9 @@ export default handler(async (req) => {
     if (!b.from) return fail(400, 'MISSING_FIELDS', 'from is required');
     email = { id: b.email_id ?? `manual-${crypto.randomUUID()}`, from: b.from, subject: b.subject ?? '', text: b.text ?? '' };
   } else {
-    if (!(await verifySignature(raw, req.headers.get('Primitive-Signature')))) {
+    const secret = Deno.env.get('PRIMITIVE_WEBHOOK_SECRET');
+    if (!secret) return fail(500, 'SERVER_MISCONFIGURED', 'secret PRIMITIVE_WEBHOOK_SECRET is not set');
+    if (!(await verifyPrimitiveSignature(raw, req.headers.get('Primitive-Signature'), secret))) {
       return fail(401, 'BAD_SIGNATURE', 'invalid Primitive-Signature');
     }
     const evt = JSON.parse(raw);
@@ -77,7 +47,7 @@ export default handler(async (req) => {
 
   const db = adminDb();
   const sender = addressOf(email.from ?? '');
-  const incidentId = (email.subject + ' ' + email.text).match(/INC-\d+/)?.[0];
+  const incidentId = incidentIdIn(email.subject, email.text);
   const { data: tech } = await db.from('technicians').select('*').eq('email', sender).maybeSingle();
   if (!incidentId || !tech) {
     // 2xx so Primitive does not retry mail we will never be able to match.
@@ -101,8 +71,7 @@ Return JSON: {"amount_usd": number|null, "available_at": ISO-8601 string|null,
 "scope": string|null, "missing": string[] (which of amount_usd, available_at, scope are absent)}`,
   );
   const q = ai ?? regexQuote(body);
-  const parsedCents = Math.round(Number(q.amount_usd) * 100);
-  const amountCents = Number.isFinite(parsedCents) && parsedCents > 0 ? parsedCents : null;
+  const amountCents = toCents(q.amount_usd);
   const availableAt = q.available_at && !isNaN(Date.parse(q.available_at)) ? q.available_at : null;
   const isComplete = !!(amountCents && availableAt && q.scope);
 

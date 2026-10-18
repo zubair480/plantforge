@@ -4,29 +4,10 @@
 //   { "incident_id": "INC-101" }                     -> get_repair_status(incident_id)
 //   { "action": "compare_quotes", "incident_id" }    -> compare_quotes(incident_id)
 
-import { adminDb, checkToken, dollars, fail, handler, json, NEXT_ACTIONS, readJson, withNext } from './_shared.ts';
+import { adminDb, checkToken, fail, handler, json, NEXT_ACTIONS, readJson, withNext } from './_shared.ts';
+import { rankQuotes } from './_logic.ts';
 
 const OPEN = Object.keys(NEXT_ACTIONS).filter((s) => s !== 'VERIFIED' && s !== 'CANCELLED');
-
-function rankQuotes(quotes: any[]) {
-  return quotes
-    .filter((q) => q.status !== 'rejected')
-    .map((q) => ({
-      quote_id: q.id,
-      technician: q.technicians?.name,
-      company: q.technicians?.company,
-      amount: dollars(q.amount_cents),
-      amount_cents: q.amount_cents,
-      available_at: q.available_at,
-      scope: q.scope,
-      is_complete: q.is_complete,
-      status: q.status,
-    }))
-    .sort((a, b) =>
-      Number(b.is_complete) - Number(a.is_complete) ||
-      (a.amount_cents ?? Infinity) - (b.amount_cents ?? Infinity) ||
-      Date.parse(a.available_at ?? '9999') - Date.parse(b.available_at ?? '9999'));
-}
 
 export default handler(async (req) => {
   const denied = checkToken(req, 'x-agent-token', 'AGENT_API_TOKEN');

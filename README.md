@@ -62,6 +62,16 @@ The simulator is off unless `SIMULATOR_KEY` is set, because a fake alarm makes t
 
 **GitHub Action:** every push and pull request runs `scripts/check.sh` (builds every function, typechecks the MCP server and approval page). Pushes to `main` then deploy, if the repo has the secret `INSFORGE_ACCESS_TOKEN` (InsForge dashboard → Profile → API Keys). Add `AGENT_API_TOKEN` too to get a post-deploy health check. `scripts/deploy.sh` stops at the first failure, so a broken migration never ships new functions.
 
+## Tests
+
+| Command | What it checks | Needs |
+|---|---|---|
+| `bash scripts/check.sh` | 14 unit tests for the decision logic (webhook signatures, quote parsing and ranking, recovery verdicts), a Deno typecheck of every bundled function, and the MCP server and approval-page typechecks | nothing |
+| `node scripts/test-db-rules.mjs` | 27 read-only checks against the live database: allowed and blocked state transitions, the guard triggers, manager-only reads | a logged-in InsForge CLI |
+| `node scripts/smoke-live.mjs` | 9 live function checks that change no data: auth, refusal to skip approval or payment, webhook signature | `AGENT_API_TOKEN`, `PLANT_INGEST_TOKEN` |
+
+`scripts/deploy.sh` runs all three, in that order around the deploy.
+
 ## Security model
 
 | Layer | Control |

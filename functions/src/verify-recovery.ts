@@ -4,6 +4,7 @@
 // REPAIR_REPORTED -> VERIFYING -> VERIFIED | VERIFICATION_FAILED.
 
 import { adminDb, checkToken, fail, handler, json, loadIncident, pageManager, readJson, transition, withNext } from './_shared.ts';
+import { recoveryVerdict } from './_logic.ts';
 
 export default handler(async (req) => {
   const denied = checkToken(req, 'x-agent-token', 'AGENT_API_TOKEN');
@@ -40,23 +41,10 @@ export default handler(async (req) => {
     .gte('recorded_at', new Date(fromMs).toISOString())
     .order('recorded_at', { ascending: true });
 
-  const rows = readings ?? [];
   const threshold = Number(asset.flow_min_lpm);
-  const bad = rows.filter((r: any) => r.fault === true || Number(r.flow_lpm ?? 0) < threshold);
-  const spanMs = rows.length > 1
-    ? Date.parse(rows[rows.length - 1].recorded_at) - Date.parse(rows[0].recorded_at) : 0;
-  const lastAge = rows.length ? now - Date.parse(rows[rows.length - 1].recorded_at) : Infinity;
-  const summary = {
-    window_seconds: windowMs / 1000,
-    readings_in_window: rows.length,
-    observed_seconds: Math.round(spanMs / 1000),
-    flow_threshold_lpm: threshold,
-    min_flow_lpm: rows.length ? Math.min(...rows.map((r: any) => Number(r.flow_lpm ?? 0))) : null,
-    fault_seen: rows.some((r: any) => r.fault === true),
-  };
+  const { result, summary } = recoveryVerdict(readings ?? [], { windowMs, thresholdLpm: threshold, now });
 
-  const latest = rows[rows.length - 1];
-  if (latest && lastAge <= 60_000 && bad.includes(latest)) {
+  if (result === 'failed') {
     // The most recent plant data still shows the problem after the repair.
     const failed = await transition(incident_id, 'VERIFYING', 'VERIFICATION_FAILED', 'agent',
       `Recovery not confirmed: ${JSON.stringify(summary)}`);
@@ -66,7 +54,7 @@ export default handler(async (req) => {
 
   // Readings from before the operator cleared the fault may still be in the
   // window; wait until the whole window is healthy.
-  if (rows.length < 3 || spanMs < windowMs * 0.8 || lastAge > 60_000 || bad.length) {
+  if (result === 'waiting_for_data') {
     return json({
       ok: true,
       verified: false,

@@ -230,9 +230,6 @@ export async function pageManager(incidentId: string, text: string) {
   }
 }
 
-export const dollars = (cents: number | null | undefined) =>
-  cents == null ? null : `$${(cents / 100).toFixed(2)}`;
-
 /** Standard wrapper: CORS, method check, and agent-readable crash errors. */
 export function handler(fn: (req: Request) => Promise<Response>) {
   return async (req: Request): Promise<Response> => {

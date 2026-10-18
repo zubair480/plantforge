@@ -9,7 +9,8 @@
 // Dynamic amounts use a fixed $1.00 (or $0.01) Price with quantity = amount,
 // because InsForge Checkout takes catalog Price IDs.
 
-import { adminDb, dollars, fail, getManager, handler, isAgent, json, readJson, withNext } from './_shared.ts';
+import { adminDb, fail, getManager, handler, isAgent, json, readJson, withNext } from './_shared.ts';
+import { dollars } from './_logic.ts';
 
 export default handler(async (req) => {
   const agent = isAgent(req);

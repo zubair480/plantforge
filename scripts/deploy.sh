@@ -30,6 +30,9 @@ else
   echo "$out" | tail -5
 fi
 
+echo "== Database rules (state machine, guard triggers, read access)"
+node scripts/test-db-rules.mjs | tail -1
+
 echo "== Edge functions"
 for f in functions/dist/*.ts; do
   slug="$(basename "$f" .ts)"
@@ -44,13 +47,11 @@ if [ "${1:-}" = "--mcp" ]; then
   (cd mcp-server && npm ci && npx mcp-use deploy --json)
 fi
 
-echo "== Post-deploy check"
-if [ -n "${AGENT_API_TOKEN:-}" ]; then
-  curl -fsS -m 30 -X POST "${INSFORGE_FUNCTIONS_URL:-https://nden3esm.us-west.insforge.app/functions}/incident-status" \
-    -H "content-type: application/json" -H "x-agent-token: $AGENT_API_TOKEN" \
-    -d '{"action":"list_active"}' > /dev/null && echo "incident-status OK"
+echo "== Post-deploy smoke test"
+if [ -n "${AGENT_API_TOKEN:-}" ] || [ -f .env.local ]; then
+  node scripts/smoke-live.mjs
 else
-  echo "(set AGENT_API_TOKEN to run the post-deploy check)"
+  echo "(set AGENT_API_TOKEN and PLANT_INGEST_TOKEN to run the live smoke test)"
 fi
 
 echo "Done. MCP smoke test: node mcp-server/scripts/smoke-test.mjs https://dark-forge-tma6f.run.mcp-use.com/mcp"

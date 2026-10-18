@@ -3,7 +3,8 @@
 // themselves; approval happens in approve-quote with a manager login.
 // QUOTE_RECEIVED -> APPROVAL_PENDING.
 
-import { adminDb, checkToken, dollars, fail, handler, json, loadIncident, pageManager, readJson, transition, withNext } from './_shared.ts';
+import { adminDb, checkToken, fail, handler, json, loadIncident, pageManager, readJson, transition, withNext } from './_shared.ts';
+import { dollars } from './_logic.ts';
 
 export default handler(async (req) => {
   const denied = checkToken(req, 'x-agent-token', 'AGENT_API_TOKEN');

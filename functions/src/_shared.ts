@@ -17,6 +17,11 @@ export const corsHeaders = {
     'Content-Type, Authorization, x-agent-token, x-plant-token, Primitive-Signature',
 };
 
+/** fetch with a deadline, so a slow provider cannot hang a function until the platform kills it. */
+export function fetchWithTimeout(url: string, init: RequestInit = {}, ms = 20_000): Promise<Response> {
+  return fetch(url, { ...init, signal: AbortSignal.timeout(ms) });
+}
+
 export function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
     status,
@@ -130,7 +135,7 @@ export const NEXT_ACTIONS: Record<string, string[]> = {
   SCHEDULED: ['wait for the technician, then report_repair'],
   REPAIR_REPORTED: ['verify_recovery'],
   VERIFYING: ['verify_recovery (call again after plant readings arrive)'],
-  VERIFICATION_FAILED: ['request_technician_quotes or escalate'],
+  VERIFICATION_FAILED: ['report_repair after the technician returns (rework)', 'page_on_call_manager with escalate=true'],
   VERIFIED: [],
   ESCALATED: ['a human operator is handling this incident'],
   CANCELLED: [],
@@ -145,7 +150,7 @@ export async function llmJson(system: string, user: string): Promise<Record<stri
   const key = Deno.env.get('OPENROUTER_API_KEY');
   if (!key) return null;
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const res = await fetchWithTimeout('https://openrouter.ai/api/v1/chat/completions', {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -175,7 +180,7 @@ export async function llmJson(system: string, user: string): Promise<Record<stri
 
 /** Send an email through Primitive. */
 export async function sendEmail(opts: { to: string; subject: string; text: string; idempotencyKey: string }) {
-  const res = await fetch('https://api.primitive.dev/v1/send-mail', {
+  const res = await fetchWithTimeout('https://api.primitive.dev/v1/send-mail', {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${env('PRIMITIVE_API_KEY')}`,
@@ -205,7 +210,7 @@ export async function pageManager(incidentId: string, text: string) {
   const to = Deno.env.get('MANAGER_PHONE');
   if (!key || !to) return { sent: false, reason: 'INKBOX_API_KEY or MANAGER_PHONE not set' };
   try {
-    const res = await fetch('https://inkbox.ai/api/v1/imessage/messages', {
+    const res = await fetchWithTimeout('https://inkbox.ai/api/v1/imessage/messages', {
       method: 'POST',
       headers: { 'X-API-Key': key, 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -237,6 +242,7 @@ export function handler(fn: (req: Request) => Promise<Response>) {
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       const illegal = /not in|illegal incident transition/.test(message);
+      if (!illegal) console.error(`${new URL(req.url).pathname} failed:`, e);
       return fail(illegal ? 409 : 500, illegal ? 'INVALID_STATE' : 'INTERNAL_ERROR', message,
         illegal ? 'Call get_repair_status to see the current status and allowed_next_actions.' : undefined);
     }

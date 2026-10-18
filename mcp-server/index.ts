@@ -8,6 +8,14 @@ import { z } from "zod";
 const FUNCTIONS_URL =
   process.env.INSFORGE_FUNCTIONS_URL ?? "https://nden3esm.us-west.insforge.app/functions";
 const AGENT_TOKEN = process.env.AGENT_API_TOKEN ?? "";
+// Optional: when set, MCP clients must send "Authorization: Bearer <MCP_ACCESS_TOKEN>".
+// Leave unset only for a public demo; the tools email contractors and page managers.
+const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN ?? "";
+const CALL_TIMEOUT_MS = Number(process.env.CALL_TIMEOUT_MS ?? 45_000);
+
+if (!AGENT_TOKEN) {
+  console.error("AGENT_API_TOKEN is not set: every tool call will be rejected by the backend.");
+}
 
 const server = new MCPServer({
   name: "plant-maintenance",
@@ -34,14 +42,40 @@ Never claim a booking, approval, payment or repair happened unless a tool result
 If a tool returns an error, read error.code and error.hint and follow the hint.`,
 });
 
+if (MCP_ACCESS_TOKEN) {
+  const requireToken = async (c: any, next: () => Promise<void>) => {
+    const got = (c.req.header("authorization") ?? "").replace(/^Bearer\s+/i, "");
+    if (got !== MCP_ACCESS_TOKEN) {
+      return c.json({ error: "unauthorized", hint: "send Authorization: Bearer <MCP_ACCESS_TOKEN>" }, 401);
+    }
+    await next();
+  };
+  server.use("/mcp", requireToken);
+  server.use("/mcp/*", requireToken);
+}
+
 type Json = Record<string, unknown>;
 
 async function callFunction(slug: string, body: Json) {
-  const res = await fetch(`${FUNCTIONS_URL}/${slug}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "x-agent-token": AGENT_TOKEN },
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${FUNCTIONS_URL}/${slug}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "x-agent-token": AGENT_TOKEN },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    });
+  } catch (e) {
+    const data = {
+      ok: false,
+      error: {
+        code: "BACKEND_UNREACHABLE",
+        message: e instanceof Error ? e.message : String(e),
+        hint: "Retry in a few seconds. Before retrying a write, call get_repair_status to see if it already happened.",
+      },
+    };
+    return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], structuredContent: data, isError: true };
+  }
   const text = await res.text();
   let data: Json;
   try {

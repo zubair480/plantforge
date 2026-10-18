@@ -21,11 +21,11 @@ The database itself refuses skipped steps. For example, it blocks paying before 
 | `incident-status` | MCP | `x-agent-token` | `{action:"list_active"}`, `{action:"asset", asset_id}`, `{incident_id}`, `{action:"compare_quotes", incident_id}` |
 | `investigate-incident` | MCP | `x-agent-token` | `{incident_id}` |
 | `request-quotes` | MCP | `x-agent-token` | `{incident_id, technician_ids?, max?}` |
-| `email-inbound` | Primitive webhook | `Primitive-Signature` | Primitive `email.received` event (agent token + `{from, subject, text}` works for testing) |
+| `email-inbound` | Primitive webhook | `Primitive-Signature` | Primitive `email.received` event (agent token + `{from, subject, text}` works only while the secret `ALLOW_MANUAL_INBOUND=true`) |
 | `request-approval` | MCP | `x-agent-token` | `{incident_id, quote_id}` |
 | `approve-quote` | Manager page | manager's InsForge login (`Authorization: Bearer`) | `{quote_id, decision, amount_cents}` |
 | `create-payment` | MCP or manager page | `x-agent-token` or manager login | `{approval_id}` |
-| `report-repair` | MCP | `x-agent-token` | `{incident_id, report, photo_url?, submitted_by?}` |
+| `report-repair` | MCP | `x-agent-token` | `{incident_id, report, photo_url?, submitted_by?}`. Also accepted after `VERIFICATION_FAILED`: the technician reworks the same paid job. |
 | `verify-recovery` | MCP | `x-agent-token` | `{incident_id, window_seconds?}` |
 
 Every response includes `incident.allowed_next_actions`. Errors look like `{error:{code, message, hint}}`.

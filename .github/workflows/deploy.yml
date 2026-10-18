@@ -1,19 +1,38 @@
-# Deploy database, edge functions and approval page to InsForge from GitHub.
-# Repo secrets needed: INSFORGE_ACCESS_TOKEN (InsForge dashboard: Profile -> API Keys).
+# Check every push and pull request; deploy database, edge functions and
+# approval page to InsForge from main once the checks pass.
+# Repo secrets: INSFORGE_ACCESS_TOKEN (InsForge dashboard: Profile -> API Keys),
+# AGENT_API_TOKEN (optional, enables the post-deploy check).
 name: deploy
 
 on:
   workflow_dispatch:
+  pull_request:
   push:
     branches: [main]
-    paths: ['migrations/**', 'functions/src/**', 'approval-page/**', 'scripts/**']
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
-  deploy:
+  check:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: bash scripts/check.sh
+
+  deploy:
+    needs: check
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
     env:
       INSFORGE_ACCESS_TOKEN: ${{ secrets.INSFORGE_ACCESS_TOKEN }}
       INSFORGE_PROJECT_ID: d7b0a23f-d743-43f7-a33d-c4fc0d308169
+      AGENT_API_TOKEN: ${{ secrets.AGENT_API_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

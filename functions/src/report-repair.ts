@@ -1,6 +1,8 @@
 // MCP tool: report_repair(incident_id, report, photo_url?, storage_key?, submitted_by?)
 // Records the technician's repair report as evidence. SCHEDULED -> REPAIR_REPORTED.
 // This is the technician's claim only; verify_recovery checks the plant data.
+// After a failed verification the same approved, paid job is reworked:
+// VERIFICATION_FAILED -> SCHEDULED -> REPAIR_REPORTED.
 
 import { adminDb, checkToken, fail, handler, json, loadIncident, readJson, transition, withNext } from './_shared.ts';
 
@@ -12,7 +14,10 @@ export default handler(async (req) => {
 
   const incident = await loadIncident(incident_id);
   if (!incident) return fail(404, 'NOT_FOUND', `incident ${incident_id} not found`);
-  if (incident.status !== 'SCHEDULED') {
+  if (incident.status === 'VERIFICATION_FAILED') {
+    await transition(incident_id, 'VERIFICATION_FAILED', 'SCHEDULED', 'technician',
+      'Technician returned to rework the failed repair');
+  } else if (incident.status !== 'SCHEDULED') {
     return fail(409, 'INVALID_STATE', `cannot report a repair while incident is ${incident.status}`,
       incident.status === 'APPROVED' ? 'The approved payment must complete first.' : 'Call get_repair_status.');
   }

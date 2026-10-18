@@ -10,7 +10,8 @@ export default handler(async (req) => {
   if (denied) return denied;
   const { incident_id, window_seconds = 30 } = await readJson(req);
   if (!incident_id) return fail(400, 'MISSING_INCIDENT_ID', 'incident_id is required');
-  const windowMs = Math.max(10, Number(window_seconds)) * 1000;
+  const seconds = Number(window_seconds);
+  const windowMs = Math.min(3600, Math.max(10, Number.isFinite(seconds) ? seconds : 30)) * 1000;
 
   let incident = await loadIncident(incident_id);
   if (!incident) return fail(404, 'NOT_FOUND', `incident ${incident_id} not found`);
@@ -28,13 +29,15 @@ export default handler(async (req) => {
     db.from('incident_events').select('created_at').eq('incident_id', incident_id)
       .eq('to_status', 'REPAIR_REPORTED').order('created_at', { ascending: false }).limit(1).maybeSingle(),
   ]);
-  const since = reportEvt?.created_at ?? incident.updated_at;
+  // Only readings after the repair report and inside the window count.
+  // Compare as instants: the database and JS format timestamps differently.
   const now = Date.now();
-  const windowStart = new Date(now - windowMs).toISOString();
+  const sinceMs = Date.parse(reportEvt?.created_at ?? incident.updated_at);
+  const fromMs = Math.max(Number.isFinite(sinceMs) ? sinceMs : 0, now - windowMs);
 
   const { data: readings } = await db.from('readings').select('flow_lpm, fault, run_cmd, recorded_at')
     .eq('asset_id', incident.asset_id)
-    .gte('recorded_at', since > windowStart ? since : windowStart)
+    .gte('recorded_at', new Date(fromMs).toISOString())
     .order('recorded_at', { ascending: true });
 
   const rows = readings ?? [];

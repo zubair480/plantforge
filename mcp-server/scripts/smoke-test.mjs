@@ -1,6 +1,7 @@
 // Minimal MCP client over Streamable HTTP: initialize, list tools, call one or more tools.
 //   node scripts/smoke-test.mjs [mcpUrl] [toolName] [jsonArgs]
 // Default: lists tools and calls get_active_incidents on http://localhost:3000/mcp
+// Set MCP_ACCESS_TOKEN when the server requires a bearer token.
 
 const [url = 'http://localhost:3000/mcp', tool = 'get_active_incidents', args = '{}'] = process.argv.slice(2);
 let session;
@@ -12,6 +13,7 @@ async function rpc(method, params, notify = false) {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      ...(process.env.MCP_ACCESS_TOKEN ? { Authorization: `Bearer ${process.env.MCP_ACCESS_TOKEN}` } : {}),
       ...(session ? { 'mcp-session-id': session } : {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', method, params, ...(notify ? {} : { id: ++id }) }),

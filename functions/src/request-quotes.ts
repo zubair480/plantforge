@@ -24,7 +24,8 @@ export default handler(async (req) => {
   if (Array.isArray(technician_ids) && technician_ids.length) query = query.in('id', technician_ids);
   const { data: all } = await query;
   const matching = (all ?? []).filter((t: any) => t.trades.includes(incident.recommended_trade));
-  const chosen = (matching.length ? matching : all ?? []).slice(0, Number(max));
+  const limit = Math.min(5, Math.max(1, Math.trunc(Number(max)) || 2));
+  const chosen = (matching.length ? matching : all ?? []).slice(0, limit);
   if (!chosen.length) {
     return fail(404, 'NO_TECHNICIANS', 'no approved technicians available', 'Escalate to a human operator.');
   }

@@ -53,12 +53,31 @@ Everything except the physical plant software runs hosted:
 | Autopilot agent + plant simulator | Blaxel, or any container host | `docker build -t plant-autopilot autopilot` |
 | Ignition / CODESYS / Factory I/O | The plant's own Windows machine | `ignition/gateway_events.py` |
 
-**Demo with no laptop:** run the autopilot container with `PLANT_INGEST_TOKEN` set, then open:
-- `GET /simulate/alarm`: the pump fails. The agent diagnoses it and emails the contractor by itself.
-- `GET /simulate/healthy?secs=35`: after the repair, healthy readings let `verify_recovery` pass.
-- `GET /`: the agent's recent actions.
+**Demo with no laptop:** run the autopilot container with `PLANT_INGEST_TOKEN` and `SIMULATOR_KEY` set, then open:
+- `GET /simulate/alarm?key=<SIMULATOR_KEY>`: the pump fails. The agent diagnoses it and emails the contractor by itself.
+- `GET /simulate/healthy?secs=35&key=<SIMULATOR_KEY>`: after the repair, healthy readings let `verify_recovery` pass.
+- `GET /`: the agent's recent actions. `GET /healthz`: the liveness check the container uses.
 
-**GitHub Action:** add the repo secret `INSFORGE_ACCESS_TOKEN` (InsForge dashboard → Profile → API Keys). Every push to `main` that touches `migrations/`, `functions/src/`, `approval-page/` or `scripts/` then deploys automatically. You can also run it by hand from the Actions tab.
+The simulator is off unless `SIMULATOR_KEY` is set, because a fake alarm makes the agent email real contractors.
+
+**GitHub Action:** every push and pull request runs `scripts/check.sh` (builds every function, typechecks the MCP server and approval page). Pushes to `main` then deploy, if the repo has the secret `INSFORGE_ACCESS_TOKEN` (InsForge dashboard → Profile → API Keys). Add `AGENT_API_TOKEN` too to get a post-deploy health check. `scripts/deploy.sh` stops at the first failure, so a broken migration never ships new functions.
+
+## Security model
+
+| Layer | Control |
+|---|---|
+| Database | Incident transitions, approval amounts and payment amounts are enforced by triggers. Only `public.managers` can read data, and all writes go through edge functions. |
+| Edge functions | Agents authenticate with `x-agent-token`, Ignition with `x-plant-token`, managers with their InsForge login, and Primitive with a signed webhook. Agents get a 403 on `approve-quote`. |
+| MCP server | Set `MCP_ACCESS_TOKEN` to require `Authorization: Bearer …` from every client. |
+| Autopilot | The simulator is disabled without `SIMULATOR_KEY`. `/healthz` lets the host restart a stuck agent. |
+
+## Production checklist
+
+1. **Primitive:** set `PRIMITIVE_API_KEY` and `PRIMITIVE_WEBHOOK_SECRET`, point the webhook at `/functions/email-inbound`, then set `ALLOW_MANUAL_INBOUND=false`. Without that last step, anyone holding the agent token can post a fake contractor quote.
+2. **MCP server:** set `MCP_ACCESS_TOKEN` on Manufact and redeploy (`bash scripts/deploy.sh --mcp`). Give the token to the autopilot and to every agent client.
+3. **Stripe:** use live keys only after a test run. The approval and payment triggers are the same in test and live mode.
+4. **Managers:** add each approver to `public.managers` with a sensible `spend_limit_cents`.
+5. **Rotate** `AGENT_API_TOKEN`, `PLANT_INGEST_TOKEN` and the InsForge project API key if they were ever shared in chat or on screen.
 
 All config is environment variables. See [.env.example](.env.example).
 

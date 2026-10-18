@@ -5,13 +5,20 @@
 // approval page. Plain Node 18+, no dependencies.
 //
 //   MCP_URL=https://dark-forge-tma6f.run.mcp-use.com/mcp node autopilot.mjs
-//   GET http://<host>:8080/ -> recent actions as JSON
+//   GET http://<host>:8080/        -> recent actions as JSON
+//   GET http://<host>:8080/healthz -> 200 while the loop is healthy
 
 import { createServer } from 'node:http';
 
 const MCP_URL = process.env.MCP_URL ?? 'https://dark-forge-tma6f.run.mcp-use.com/mcp';
+const MCP_ACCESS_TOKEN = process.env.MCP_ACCESS_TOKEN ?? '';
 const INTERVAL_MS = Number(process.env.INTERVAL_MS ?? 15000);
 const NO_REPLY_PAGE_MS = Number(process.env.NO_REPLY_PAGE_MS ?? 10 * 60 * 1000);
+const REQUEST_TIMEOUT_MS = Number(process.env.REQUEST_TIMEOUT_MS ?? 30000);
+// The simulator fakes plant alarms, which make the agent email contractors.
+// It is off unless SIMULATOR_KEY is set, and every call must carry ?key=<SIMULATOR_KEY>.
+const SIMULATOR_KEY = process.env.SIMULATOR_KEY ?? '';
+let lastTickOk = 0;
 
 let session;
 let rpcId = 0;
@@ -31,12 +38,15 @@ async function rpc(method, params, notify = false) {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
+      ...(MCP_ACCESS_TOKEN ? { Authorization: `Bearer ${MCP_ACCESS_TOKEN}` } : {}),
       ...(session ? { 'mcp-session-id': session } : {}),
     },
     body: JSON.stringify({ jsonrpc: '2.0', method, params, ...(notify ? {} : { id: ++rpcId }) }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   session = res.headers.get('mcp-session-id') ?? session;
   if (notify) return null;
+  if (res.status === 401) throw new Error('MCP server rejected the token (check MCP_ACCESS_TOKEN)');
   const text = await res.text();
   const payload = text.trim().startsWith('{')
     ? text
@@ -112,11 +122,13 @@ async function work(incident) {
       break;
     }
     case 'APPROVED': {
-      if (!once(key)) return;
+      if (done.has(key)) return;
       const status = await tool('get_repair_status', { incident_id: id });
       const approval = status.data?.approvals?.findLast?.((a) => a.decision === 'approved');
       if (!approval) return;
       const r = await tool('create_authorized_payment', { approval_id: approval.id });
+      // Only mark done on success, so a transient failure is retried next cycle.
+      if (r.ok) done.add(key);
       record(id, 'create_authorized_payment', r.ok ? `ready to pay at ${r.data.payment?.pay_url}` : err(r));
       break;
     }
@@ -138,9 +150,11 @@ async function work(incident) {
 async function tick() {
   try {
     const r = await tool('get_active_incidents');
+    if (!r.ok) throw new Error(err(r));
     for (const incident of r.data?.incidents ?? []) {
       await work(incident).catch((e) => record(incident.id, 'error', e.message));
     }
+    lastTickOk = Date.now();
   } catch (e) {
     record('-', 'error', e.message);
   }
@@ -156,6 +170,7 @@ async function plantEvent(event) {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-plant-token': process.env.PLANT_INGEST_TOKEN ?? '' },
     body: JSON.stringify({ asset_id: PLANT.asset_id, ts: new Date().toISOString(), ...event }),
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   return res.json().catch(() => ({ status: res.status }));
 }
@@ -184,28 +199,63 @@ async function simulate(kind, secs) {
   return { ok: true, streaming: `${kind} readings for ${secs}s` };
 }
 
-createServer(async (req, res) => {
+const server = createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const send = (code, body) => {
     res.writeHead(code, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(body, null, 2));
   };
+  if (url.pathname === '/healthz') {
+    // Unhealthy if no successful cycle for 5 intervals, so the host restarts us.
+    const healthy = Date.now() - lastTickOk < INTERVAL_MS * 5;
+    return send(healthy ? 200 : 503, { healthy, last_ok: lastTickOk ? new Date(lastTickOk).toISOString() : null });
+  }
   const sim = url.pathname.match(/^\/simulate\/(alarm|healthy|faulty)$/);
   if (sim) {
+    if (!SIMULATOR_KEY) return send(404, { error: 'simulator disabled (set SIMULATOR_KEY to enable)' });
+    if (url.searchParams.get('key') !== SIMULATOR_KEY) return send(401, { error: 'missing or wrong ?key=' });
     if (!process.env.PLANT_INGEST_TOKEN) return send(503, { error: 'PLANT_INGEST_TOKEN not set' });
-    const result = await simulate(sim[1], Number(url.searchParams.get('secs') ?? 35));
-    record('-', `simulate_${sim[1]}`, JSON.stringify(result).slice(0, 120));
-    return send(200, result);
+    const secs = Math.min(600, Math.max(5, Number(url.searchParams.get('secs')) || 35));
+    try {
+      const result = await simulate(sim[1], secs);
+      record('-', `simulate_${sim[1]}`, JSON.stringify(result).slice(0, 120));
+      return send(200, result);
+    } catch (e) {
+      return send(502, { error: e.message });
+    }
   }
   send(200, {
     agent: 'plant-autopilot',
     mcp: MCP_URL,
-    simulate: ['/simulate/alarm', '/simulate/healthy?secs=35', '/simulate/faulty?secs=10'],
+    simulator: SIMULATOR_KEY ? ['/simulate/alarm?key=…', '/simulate/healthy?secs=35&key=…', '/simulate/faulty?secs=10&key=…'] : 'disabled',
     recent_actions: log,
   });
 }).listen(Number(process.env.PORT ?? 8080));
 
-await connect();
+// One cycle at a time: the next starts only after the previous one finishes,
+// so a slow backend cannot pile up overlapping cycles.
+let timer;
+let stopping = false;
+async function loop() {
+  await tick();
+  if (!stopping) timer = setTimeout(loop, INTERVAL_MS);
+}
+
+function shutdown(signal) {
+  stopping = true;
+  clearTimeout(timer);
+  record('-', 'stopping', signal);
+  server.close(() => process.exit(0));
+  setTimeout(() => process.exit(0), 5000).unref();
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
+try {
+  await connect();
+} catch (e) {
+  // tool() reconnects on the next cycle; keep the process alive for /healthz.
+  record('-', 'error', `initial connect failed: ${e.message}`);
+}
 record('-', 'started', `watching ${MCP_URL} every ${INTERVAL_MS / 1000}s`);
-await tick();
-setInterval(tick, INTERVAL_MS);
+loop();

@@ -22,3 +22,6 @@ node_modules/
 .mcp-use/
 dist/
 *.log
+
+# Teammate env handoff file
+friend.env.local

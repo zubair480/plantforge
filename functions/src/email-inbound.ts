@@ -3,8 +3,9 @@
 // technician, extracts price / arrival / scope, and stores a quote.
 // QUOTES_REQUESTED -> QUOTE_RECEIVED on the first quote.
 //
-// Testing fallback: callers with x-agent-token may post
-// { "from": "...", "subject": "[INC-101] ...", "text": "...", "email_id": "test-1" }.
+// Testing fallback, only when the secret ALLOW_MANUAL_INBOUND=true: callers with
+// x-agent-token may post { "from": "...", "subject": "[INC-101] ...", "text": "...", "email_id": "test-1" }.
+// Keep it off in production, otherwise an agent could inject a contractor quote.
 
 import { adminDb, env, fail, handler, isAgent, json, llmJson, transition } from './_shared.ts';
 
@@ -45,15 +46,26 @@ export default handler(async (req) => {
   const raw = await req.text();
   let email: { id: string; from: string; subject: string; text: string };
 
+  const manualAllowed = Deno.env.get('ALLOW_MANUAL_INBOUND') === 'true';
   if (isAgent(req)) {
-    const b = JSON.parse(raw || '{}');
+    if (!manualAllowed) {
+      return fail(403, 'MANUAL_INBOUND_DISABLED', 'contractor replies must arrive as signed Primitive webhooks',
+        'Set the secret ALLOW_MANUAL_INBOUND=true only for testing.');
+    }
+    let b: Record<string, any>;
+    try {
+      b = JSON.parse(raw || '{}');
+    } catch {
+      return fail(400, 'BAD_JSON', 'body must be JSON');
+    }
+    if (!b.from) return fail(400, 'MISSING_FIELDS', 'from is required');
     email = { id: b.email_id ?? `manual-${crypto.randomUUID()}`, from: b.from, subject: b.subject ?? '', text: b.text ?? '' };
   } else {
     if (!(await verifySignature(raw, req.headers.get('Primitive-Signature')))) {
       return fail(401, 'BAD_SIGNATURE', 'invalid Primitive-Signature');
     }
     const evt = JSON.parse(raw);
-    if (evt.event !== 'email.received') return json({ ok: true, ignored: evt.event });
+    if (evt.event !== 'email.received' || !evt.email) return json({ ok: true, ignored: evt.event });
     const e = evt.email;
     email = {
       id: e.id,
@@ -89,7 +101,8 @@ Return JSON: {"amount_usd": number|null, "available_at": ISO-8601 string|null,
 "scope": string|null, "missing": string[] (which of amount_usd, available_at, scope are absent)}`,
   );
   const q = ai ?? regexQuote(body);
-  const amountCents = q.amount_usd ? Math.round(Number(q.amount_usd) * 100) : null;
+  const parsedCents = Math.round(Number(q.amount_usd) * 100);
+  const amountCents = Number.isFinite(parsedCents) && parsedCents > 0 ? parsedCents : null;
   const availableAt = q.available_at && !isNaN(Date.parse(q.available_at)) ? q.available_at : null;
   const isComplete = !!(amountCents && availableAt && q.scope);
 
